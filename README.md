@@ -1,2 +1,11 @@
-# BioinformaticsCourse2025
-Bioinformatics Course for HSE master students
+# Bioinformatics Course for HSE master students
+
+Репозиторий с домашними заданиями по курсу "Алгоритмы в Биоинформатике".
+
+Чтобы сдать домашнее задание, сделайте форк данного репозитория, создайте ветку от master, в которой будете выполнять домашнее задание
+
+git checkout -b "Bioinformatics [Фамилия] [номер задания]"
+Закончив выполнение задания, заведите PR и укажите меня (@1dayac) в reviewers.
+
+
+Мой почтовый адрес - meleshko.dmitrii@gmail.com
