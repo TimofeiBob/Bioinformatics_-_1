@@ -1,0 +1,227 @@
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+from Bio import SeqIO
+import random
+
+
+random.seed(42)  
+
+
+
+
+def generate_random_sequence(length):
+    alphabet='ACGT'
+    return ''.join(random.choice(alphabet) for _ in range(length))
+
+
+def write_random_fastq(output_file, seq_length=1000, num_records=1, genome=None):
+    """Write random sequence(s) to a FASTQ file."""
+    records = []
+
+    random_seq = generate_random_sequence(seq_length) if genome == None else genome
+    
+    idx = [random.randint(0, 999) for _ in range(num_records)]
+
+    for i in range(num_records):   #30 for sure coverage
+        start_i = idx[i]
+        fin_i = min(999, start_i+150) 
+        read = random_seq[start_i:fin_i]
+        print(len(read))
+
+        # Create SeqRecord
+        record = SeqRecord(
+            Seq(read),
+            id=f"RANDOM_{i+1}",
+            description="Randomly generated sequence, fixed seed",
+            letter_annotations={"phred_quality": [73 for _ in range(len(read))]}
+        )
+        records.append(record)
+    
+    SeqIO.write(records, output_file, "fastq")
+
+
+
+from collections import defaultdict
+
+class de_brujin:
+    def __init__(self, k, fastq_file, test = None):
+        self.k = k
+        self.graph = defaultdict(lambda: [])
+        self.fastq_file = fastq_file
+        self.test = test
+        self.read_offsets = self.build_offset_index(fastq_file)
+        
+
+    def build_offset_index(self, fastq_file):
+        """Build a list of byte offsets for each read (1 per 4 lines)."""
+        offsets = []
+        with open(fastq_file, 'rb') as f:
+            offset = f.tell()
+            line_count = 0
+            while True:
+                if self.test is not None:
+                    if len(offsets)==self.test:
+                        break
+                line = f.readline()
+                if not line:
+                    break
+                if line_count % 4 == 0:
+                    offsets.append(offset)
+                line_count += 1
+                offset = f.tell()
+        return offsets
+
+    def get_read_by_id(self, read_id):
+        """Fetch a read string from the FASTQ file based on byte offset."""
+        if read_id < 0 or read_id >= len(self.read_offsets):
+            raise IndexError(f"Read index {read_id} out of bounds")
+
+        with open(self.fastq_file, 'rt') as f:
+            f.seek(self.read_offsets[read_id])
+            lines = [f.readline().strip() for _ in range(4)]
+            return lines[1]  # Sequence line
+
+    def check_equal(self, loc1, loc2):
+        """Compare substrings of length `k-1` from two reads at given positions."""
+        k = self.k - 1
+        read_id1, pos1 = loc1
+        read_id2, pos2 = loc2
+
+        s1 = self.get_read_by_id(read_id1)
+        s2 = self.get_read_by_id(read_id2)
+
+        if pos1 + k > len(s1) or pos2 + k > len(s2):
+            print("INEQUALITY (length)")
+            return False
+
+        if s1[pos1:pos1 + k] != s2[pos2:pos2 + k]:
+            print("INEQUALITY strings")
+            print(s1[pos1:pos1 + k])
+            print(s2[pos2:pos2 + k])
+            return False
+
+        return True
+
+
+    def add_to_graph(self, s, read_id): #DEBRUNE
+        k = self.k  #kmer segment(5), k-1 letter must match(4)
+        #read = s
+        n = len(s)
+        if n < k:
+            return None
+        
+        # p = 31; mod = 10**9 + 7
+        p = 31; mod = 2**61 - 1
+        # p = 2; mod = 4
+        pow_p = [1] * (n + 1)   #array for getting hash segments
+        prefix_hash = [0] * (n + 1)
+        
+        for i in range(1, n + 1):
+            pow_p[i] = (pow_p[i-1] * p) % mod
+            prefix_hash[i] = (prefix_hash[i-1] * p + ord(s[i-1])) % mod 
+        
+        
+        def get_hash(l, r):
+            return (prefix_hash[r] - prefix_hash[l] * pow_p[r - l]) % mod         #extract to class #TODO
+        
+        graph = self.graph #defaultdict(list of neighbors)
+        for i in range(n - k + 1):
+            # Берём (k-1)-меры: s[i..i+k-2] и s[i+1..i+k-1]
+            left_kmer_hash = get_hash(i, i + k - 1)
+            right_kmer_hash = get_hash(i + 1, i + k) #same but + 1
+
+            if left_kmer_hash in graph:
+                if self.check_equal((read_id,i), graph[left_kmer_hash][0][1] ): 
+                    graph[left_kmer_hash][0][2] +=1 
+                    # print("that's alright, just up the cnt")
+                else:
+                    continue #if I use hash, I don't have a way to store collisions, but with correct p and m, they should never occur.
+
+            # print(f"adding {s[i:i+k-1]}; hash = {left_kmer_hash} ")
+            # Добавляем ребро left → right
+            node = [right_kmer_hash, (read_id, i), 1] #0 = neighbor hash, 1 = location for checks, 2=cnt
+            graph[left_kmer_hash].append(node)
+
+        
+        return True
+
+    def bfs_traversal(self, start_hash=None, max_nodes=10):
+        """Perform DFS and print the first `max_nodes` k-mers."""
+        visited = set()
+        stack = []
+        result = []
+
+        if start_hash is None:
+            if not self.graph:
+                return []
+            start_hash = next(iter(self.graph))
+
+        stack.append(start_hash)
+
+        while stack and len(result) < max_nodes:
+            current_hash = stack.pop()
+            if current_hash in visited:
+                continue
+            visited.add(current_hash)
+
+            for neighbor in self.graph.get(current_hash, []):
+                right_hash, (read_id, pos), _ = neighbor
+                result.append(neighbor)
+                if right_hash not in visited:
+                    stack.append(right_hash)
+
+        return result[:max_nodes]
+
+
+
+
+
+# main()
+
+def main(test):
+    import os
+    if test is None:
+        print("REAL GENOME 8gb")
+    else:
+        print("TEST")
+
+    fastq_file = "ERR008613.fastq" 
+    if test == 0:
+        fastq_file = "random_READS.fastq" 
+
+    if test== 0 and not os.path.exists(fastq_file):
+        print(f"TEST file {fastq_file} not found. Generating FASTQ file with simulated reads.")
+        genome = generate_random_sequence(1000)
+        write_random_fastq(output_file=fastq_file, seq_length=1000, num_records=30, genome=genome)
+
+
+    k = 51
+    br = de_brujin(k=k, fastq_file=fastq_file, test=test)
+    cnt_reject = 0
+
+    i = 0
+    for record in SeqIO.parse(fastq_file, "fastq"):
+        if i % 1000==0 and i!=0:
+            print(f"{i}/28 000 000 reads")
+            if i == test:
+                break; print(f"i = {i} reached, break of test-reading the file")
+        read = record.seq
+        # print(f"NEXT READ: {i}, {read}")
+        if br.add_to_graph(read, read_id=i) is None:
+            # print(f"Read {i} is too short for k={k}, skipping.")
+            cnt_reject+=1
+        i+=1
+
+
+
+    print(f"{cnt_reject} reads were rejected")
+
+
+
+    
+    
+main(test=100000)
+
+
+#test = n : n reads
+#test = None: all reads (long)
